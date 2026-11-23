@@ -1,0 +1,41 @@
+{
+  // PixelRelay by Accurova at https://pixelrelay.accurova.com: a Worker in front of one Container
+  // (cloudflare/worker.js). Deployed by .github/workflows/deploy.yml on every push to main, because building
+  // the image needs Docker (the runner has it; the dev machine doesn't). Setup steps: progress.md.
+  //
+  // Secrets, set once with `npx wrangler secret put <NAME>` (never in git):
+  //   SECRET_KEY DATABASE_URL R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY SUPABASE_URL SUPABASE_ANON_KEY OWNER_EMAILS
+  "name": "accurova-pixelrelay",
+  "account_id": "c580c4403524273d1bece674117472dd",
+  "main": "cloudflare/worker.js",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "vars": {
+    "APP_ENV": "production",
+    "BASE_URL": "https://pixelrelay.accurova.com",
+    "AUTH_MODE": "supabase",
+    "STORAGE_PROVIDER": "r2",
+    "R2_ENDPOINT": "https://c580c4403524273d1bece674117472dd.r2.cloudflarestorage.com",
+    "R2_BUCKET": "accurova-pixelrelay",
+    "DB_SCHEMA": "accurova_pixelrelay",
+    // The container only sees traffic from this Worker, and Cloudflare sets CF-Connecting-IP itself.
+    "TRUST_PROXY": "1",
+    "WORKER_MODE": "thread",
+    "MAX_UPLOAD_MB": "80"
+  },
+  // A new hostname (never on Zeabur). Removing this route makes the *.accurova.com wildcard answer instead.
+  "routes": [{ "pattern": "pixelrelay.accurova.com", "custom_domain": true }],
+
+  "containers": [
+    {
+      "class_name": "PixelRelayContainer",
+      "scheduling_policy": "durable_object",
+      "images": { "pixelrelay": { "dockerfile": "./Dockerfile" } }
+    }
+  ],
+  "durable_objects": { "bindings": [{ "name": "APP", "class_name": "PixelRelayContainer" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PixelRelayContainer"] }],
+
+  "observability": { "enabled": true }
+}
