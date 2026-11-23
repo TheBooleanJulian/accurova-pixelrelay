@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import re
-import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
@@ -40,13 +39,13 @@ def config(request: Request):
 
 
 @router.get("/me")
-def me(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def me(request: Request, conn: db.Conn = Depends(get_conn)):
     owner = access.require_owner(request, conn)
     return {"user": {"id": owner.user_id, "email": owner.email}}
 
 
 def _start_session(
-    request: Request, response: Response, conn: sqlite3.Connection, provider: str, subject: str, email: str
+    request: Request, response: Response, conn: db.Conn, provider: str, subject: str, email: str
 ) -> dict:
     settings = request.app.state.settings
     if not auth.owner_allowed(settings, email):
@@ -62,7 +61,7 @@ def _start_session(
 
 
 @router.post("/dev-login")
-def dev_login(body: EmailIn, request: Request, response: Response, conn: sqlite3.Connection = Depends(get_conn)):
+def dev_login(body: EmailIn, request: Request, response: Response, conn: db.Conn = Depends(get_conn)):
     settings = request.app.state.settings
     if settings.auth_mode != "dev" or settings.is_production:
         raise HTTPException(404, "Not found")
@@ -86,7 +85,7 @@ def magic_link(body: EmailIn, request: Request):
 
 
 @router.post("/supabase-session")
-def supabase_session(body: TokenIn, request: Request, response: Response, conn: sqlite3.Connection = Depends(get_conn)):
+def supabase_session(body: TokenIn, request: Request, response: Response, conn: db.Conn = Depends(get_conn)):
     settings = request.app.state.settings
     if settings.auth_mode != "supabase":
         raise HTTPException(404, "Not found")
@@ -98,7 +97,7 @@ def supabase_session(body: TokenIn, request: Request, response: Response, conn: 
 
 
 @router.post("/logout")
-def logout(request: Request, response: Response, conn: sqlite3.Connection = Depends(get_conn)):
+def logout(request: Request, response: Response, conn: db.Conn = Depends(get_conn)):
     owner = access.current_owner(request, conn)
     if owner:
         conn.execute("UPDATE owner_sessions SET revoked_at = ? WHERE id = ?", (db.now_iso(), owner.session_id))

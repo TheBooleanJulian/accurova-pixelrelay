@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import io
-import sqlite3
 
 import numpy as np
 import pytest
 from PIL import Image
 
-from pixelrelay import ratelimit
+from pixelrelay import db, ratelimit
 from tests.conftest import join, make_client
 from tests.fixtures import edited_copy, lowres_jpeg_export, textured_photo
 
@@ -51,9 +50,25 @@ def test_project_has_persistent_six_digit_pin(owner, project):
     assert again["room_url"].endswith(f"/r/{project['slug']}")
 
 
+def dump_database(conn) -> str:
+    """Every value in every table, as text (both backends)."""
+    if conn.dialect == "sqlite":
+        tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")]
+    else:
+        tables = [
+            r[0]
+            for r in conn.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = ?", (conn.schema,)
+            )
+        ]
+    return "\n".join(repr(tuple(row)) for t in tables for row in conn.execute(f"SELECT * FROM {t}"))
+
+
 def test_pin_is_not_stored_in_plain_text(app, project):
-    conn = sqlite3.connect(app.state.settings.db_path)
-    dump = "\n".join(conn.iterdump())
+    conn = db.connect_settings(app.state.settings)
+    dump = dump_database(conn)
+    conn.close()
+    assert "Group shoot" in dump  # the dump does see the project
     assert project["pin"] not in dump.replace(project["id"], "")
 
 
@@ -141,9 +156,7 @@ def test_pin_brute_force_is_rate_limited(app, project):
 
 
 def test_rate_limit_decays_and_never_locks_out(app):
-    from pixelrelay import db
-
-    conn = db.connect(app.state.settings.db_path)
+    conn = db.connect_settings(app.state.settings)
     t0 = 1_000_000.0
     for i in range(30):
         ratelimit.record(conn, "p", "ip", False, now=t0 + i)
@@ -156,11 +169,9 @@ def test_rate_limit_decays_and_never_locks_out(app):
 
 
 def test_suspicious_activity_is_flagged(app, owner, project):
-    from pixelrelay import db
-
-    conn = db.connect(app.state.settings.db_path)
     import time
 
+    conn = db.connect_settings(app.state.settings)
     for i in range(ratelimit.PROJECT_ALERT):
         ratelimit.record(conn, project["id"], f"ip{i}", False, now=time.time() - 100)
     assert owner.get(f"/api/projects/{project['id']}").json()["suspicious_pin_activity"] is True
@@ -397,18 +408,16 @@ def test_new_upload_never_overwrites_original_or_previous(app, owner, project, r
 
 
 def test_database_enforces_immutability(app, owner, project, run_jobs):
-    from pixelrelay import db
-
     assign_all(owner, project, {0: "Ava"})
     upload_and_submit(join(app, project, "Ava"), project, project["photos"][0], run_jobs)
-    conn = db.connect(app.state.settings.db_path)
-    with pytest.raises(sqlite3.DatabaseError):
+    conn = db.connect_settings(app.state.settings)
+    with pytest.raises(db.DatabaseError):
         conn.execute("UPDATE assets SET storage_key = 'x' WHERE kind = 'original'")
-    with pytest.raises(sqlite3.DatabaseError):
+    with pytest.raises(db.DatabaseError):
         conn.execute("UPDATE revisions SET composite_asset_id = upload_asset_id")
-    with pytest.raises(sqlite3.DatabaseError):
+    with pytest.raises(db.DatabaseError):
         conn.execute("DELETE FROM revisions")
-    with pytest.raises(sqlite3.DatabaseError):
+    with pytest.raises(db.DatabaseError):
         conn.execute("UPDATE photos SET original_asset_id = thumb_asset_id")
     # Status changes are still allowed.
     conn.execute("UPDATE revisions SET status = 'approved'")

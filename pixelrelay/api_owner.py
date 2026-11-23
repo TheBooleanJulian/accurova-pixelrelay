@@ -6,7 +6,6 @@ signed-in owner can only reach their own projects (others get 404).
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import date
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
@@ -98,12 +97,12 @@ class ExportIn(BaseModel):
     format: str = Field(default="jpeg", pattern="^(jpeg|png)$")
 
 
-def _ctx(request: Request, conn: sqlite3.Connection, project_id: str):
+def _ctx(request: Request, conn: db.Conn, project_id: str):
     owner = access.require_owner(request, conn)
     return owner, access.owner_project(conn, owner, project_id)
 
 
-def _project_dict(request: Request, conn: sqlite3.Connection, p: sqlite3.Row) -> dict:
+def _project_dict(request: Request, conn: db.Conn, p: db.Row) -> dict:
     settings = request.app.state.settings
     pin, version = services.room_pin(conn, settings, p["id"])
     decision = ratelimit.check(conn, p["id"], "-")
@@ -129,7 +128,7 @@ def _project_dict(request: Request, conn: sqlite3.Connection, p: sqlite3.Row) ->
 
 
 @router.get("")
-def list_projects(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def list_projects(request: Request, conn: db.Conn = Depends(get_conn)):
     owner = access.require_owner(request, conn)
     rows = db.all_rows(conn, "SELECT * FROM projects WHERE owner_id = ? ORDER BY created_at DESC", (owner.user_id,))
     return {
@@ -153,7 +152,7 @@ def list_projects(request: Request, conn: sqlite3.Connection = Depends(get_conn)
 
 
 @router.post("", status_code=201)
-def create_project(body: ProjectIn, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def create_project(body: ProjectIn, request: Request, conn: db.Conn = Depends(get_conn)):
     owner = access.require_owner(request, conn)
     try:
         project_id = services.create_project(
@@ -171,13 +170,13 @@ def create_project(body: ProjectIn, request: Request, conn: sqlite3.Connection =
 
 
 @router.get("/{project_id}")
-def get_project(project_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def get_project(project_id: str, request: Request, conn: db.Conn = Depends(get_conn)):
     _, p = _ctx(request, conn, project_id)
     return _project_dict(request, conn, p)
 
 
 @router.patch("/{project_id}")
-def patch_project(project_id: str, body: ProjectPatch, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def patch_project(project_id: str, body: ProjectPatch, request: Request, conn: db.Conn = Depends(get_conn)):
     owner, p = _ctx(request, conn, project_id)
     values = {k: v for k, v in body.model_dump(exclude_unset=True).items()}
     if "name" in values and values["name"]:
@@ -191,21 +190,21 @@ def patch_project(project_id: str, body: ProjectPatch, request: Request, conn: s
 
 
 @router.post("/{project_id}/pin/rotate")
-def rotate_pin(project_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def rotate_pin(project_id: str, request: Request, conn: db.Conn = Depends(get_conn)):
     owner, p = _ctx(request, conn, project_id)
     pin = services.rotate_pin(conn, request.app.state.settings, p["id"], owner.user_id)
     return {"pin": pin}
 
 
 @router.get("/{project_id}/activity")
-def activity(project_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def activity(project_id: str, request: Request, conn: db.Conn = Depends(get_conn)):
     _, p = _ctx(request, conn, project_id)
     rows = db.all_rows(
         conn,
         "SELECT e.*, m.display_name, ph.title FROM activity_events e"
         " LEFT JOIN project_members m ON m.id = e.actor_id AND e.actor_type = 'contributor'"
         " LEFT JOIN photos ph ON ph.id = e.photo_id"
-        " WHERE e.project_id = ? ORDER BY e.created_at DESC, e.rowid DESC LIMIT 200",
+        " WHERE e.project_id = ? ORDER BY e.created_at DESC, e.id DESC LIMIT 200",
         (p["id"],),
     )
     return {
@@ -228,7 +227,7 @@ def activity(project_id: str, request: Request, conn: sqlite3.Connection = Depen
 # Participants
 
 
-def _member_rows(conn: sqlite3.Connection, project_id: str) -> list[dict]:
+def _member_rows(conn: db.Conn, project_id: str) -> list[dict]:
     loads = services.loads(conn, project_id)
     sessions = {
         r["member_id"]: r["n"]
@@ -263,13 +262,13 @@ def _member_rows(conn: sqlite3.Connection, project_id: str) -> list[dict]:
 
 
 @router.get("/{project_id}/members")
-def list_members(project_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def list_members(project_id: str, request: Request, conn: db.Conn = Depends(get_conn)):
     _, p = _ctx(request, conn, project_id)
     return {"members": _member_rows(conn, p["id"])}
 
 
 @router.post("/{project_id}/members", status_code=201)
-def add_members(project_id: str, body: NamesIn, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def add_members(project_id: str, body: NamesIn, request: Request, conn: db.Conn = Depends(get_conn)):
     owner, p = _ctx(request, conn, project_id)
     try:
         services.add_members(conn, p["id"], body.names, owner.user_id)
@@ -280,7 +279,7 @@ def add_members(project_id: str, body: NamesIn, request: Request, conn: sqlite3.
 
 @router.patch("/{project_id}/members/{member_id}")
 def patch_member(
-    project_id: str, member_id: str, body: MemberPatch, request: Request, conn: sqlite3.Connection = Depends(get_conn)
+    project_id: str, member_id: str, body: MemberPatch, request: Request, conn: db.Conn = Depends(get_conn)
 ):
     _, p = _ctx(request, conn, project_id)
     member = access.owner_row(conn, p["id"], "project_members", member_id)
@@ -297,7 +296,7 @@ def patch_member(
 
 
 @router.delete("/{project_id}/members/{member_id}")
-def remove_member(project_id: str, member_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def remove_member(project_id: str, member_id: str, request: Request, conn: db.Conn = Depends(get_conn)):
     owner, p = _ctx(request, conn, project_id)
     member = access.owner_row(conn, p["id"], "project_members", member_id)
     if not member["removed_at"]:
@@ -306,7 +305,7 @@ def remove_member(project_id: str, member_id: str, request: Request, conn: sqlit
 
 
 @router.post("/{project_id}/members/{member_id}/invite")
-def invite(project_id: str, member_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def invite(project_id: str, member_id: str, request: Request, conn: db.Conn = Depends(get_conn)):
     _, p = _ctx(request, conn, project_id)
     member = access.owner_row(conn, p["id"], "project_members", member_id)
     if member["removed_at"]:
@@ -317,7 +316,7 @@ def invite(project_id: str, member_id: str, request: Request, conn: sqlite3.Conn
 
 
 @router.get("/{project_id}/members/{member_id}/sessions")
-def member_sessions(project_id: str, member_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def member_sessions(project_id: str, member_id: str, request: Request, conn: db.Conn = Depends(get_conn)):
     _, p = _ctx(request, conn, project_id)
     access.owner_row(conn, p["id"], "project_members", member_id)
     rows = db.all_rows(
@@ -330,7 +329,7 @@ def member_sessions(project_id: str, member_id: str, request: Request, conn: sql
 
 
 @router.post("/{project_id}/sessions/{session_id}/revoke")
-def revoke_session(project_id: str, session_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def revoke_session(project_id: str, session_id: str, request: Request, conn: db.Conn = Depends(get_conn)):
     owner, p = _ctx(request, conn, project_id)
     access.owner_row(conn, p["id"], "contributor_sessions", session_id)
     with db.transaction(conn):
@@ -340,9 +339,7 @@ def revoke_session(project_id: str, session_id: str, request: Request, conn: sql
 
 
 @router.post("/{project_id}/members/{member_id}/sessions/revoke")
-def revoke_member_sessions(
-    project_id: str, member_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn)
-):
+def revoke_member_sessions(project_id: str, member_id: str, request: Request, conn: db.Conn = Depends(get_conn)):
     owner, p = _ctx(request, conn, project_id)
     access.owner_row(conn, p["id"], "project_members", member_id)
     with db.transaction(conn):
@@ -359,9 +356,7 @@ def revoke_member_sessions(
 
 
 @router.post("/{project_id}/photos", status_code=201)
-def upload_original(
-    project_id: str, request: Request, file: UploadFile = File(...), conn: sqlite3.Connection = Depends(get_conn)
-):
+def upload_original(project_id: str, request: Request, file: UploadFile = File(...), conn: db.Conn = Depends(get_conn)):
     owner, p = _ctx(request, conn, project_id)
     data = read_upload(request, file)
     try:
@@ -380,15 +375,13 @@ def upload_original(
 
 
 @router.get("/{project_id}/photos")
-def list_photos(project_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def list_photos(project_id: str, request: Request, conn: db.Conn = Depends(get_conn)):
     _, p = _ctx(request, conn, project_id)
     return {"photos": services.list_photos(conn, p["id"])}
 
 
 @router.patch("/{project_id}/photos/{photo_id}")
-def patch_photo(
-    project_id: str, photo_id: str, body: PhotoPatch, request: Request, conn: sqlite3.Connection = Depends(get_conn)
-):
+def patch_photo(project_id: str, photo_id: str, body: PhotoPatch, request: Request, conn: db.Conn = Depends(get_conn)):
     _, p = _ctx(request, conn, project_id)
     access.owner_row(conn, p["id"], "photos", photo_id)
     values = body.model_dump(exclude_unset=True)
@@ -401,7 +394,7 @@ def patch_photo(
 
 
 @router.get("/{project_id}/photos/{photo_id}")
-def photo_detail(project_id: str, photo_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def photo_detail(project_id: str, photo_id: str, request: Request, conn: db.Conn = Depends(get_conn)):
     _, p = _ctx(request, conn, project_id)
     photo = access.owner_row(conn, p["id"], "photos", photo_id)
     summary = next(x for x in services.list_photos(conn, p["id"]) if x["id"] == photo_id)
@@ -452,7 +445,7 @@ def photo_detail(project_id: str, photo_id: str, request: Request, conn: sqlite3
 # Assignments
 
 
-def _plan_view(conn: sqlite3.Connection, project_id: str, plan) -> dict:
+def _plan_view(conn: db.Conn, project_id: str, plan) -> dict:
     names = {m["id"]: m["display_name"] for m in services._members(conn, project_id)}
     titles = {
         r["id"]: r["title"]
@@ -468,13 +461,13 @@ def _plan_view(conn: sqlite3.Connection, project_id: str, plan) -> dict:
 
 
 @router.post("/{project_id}/assignments/preview")
-def preview_assignments(project_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def preview_assignments(project_id: str, request: Request, conn: db.Conn = Depends(get_conn)):
     _, p = _ctx(request, conn, project_id)
     return _plan_view(conn, p["id"], services.preview_distribution(conn, p["id"]))
 
 
 @router.post("/{project_id}/assignments/publish")
-def publish_assignments(project_id: str, body: PlanIn, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def publish_assignments(project_id: str, body: PlanIn, request: Request, conn: db.Conn = Depends(get_conn)):
     owner, p = _ctx(request, conn, project_id)
     for item in body.assignments:
         access.owner_row(conn, p["id"], "photos", item.photo_id)
@@ -487,9 +480,7 @@ def publish_assignments(project_id: str, body: PlanIn, request: Request, conn: s
 
 
 @router.put("/{project_id}/photos/{photo_id}/assignment")
-def set_assignment(
-    project_id: str, photo_id: str, body: AssignIn, request: Request, conn: sqlite3.Connection = Depends(get_conn)
-):
+def set_assignment(project_id: str, photo_id: str, body: AssignIn, request: Request, conn: db.Conn = Depends(get_conn)):
     owner, p = _ctx(request, conn, project_id)
     access.owner_row(conn, p["id"], "photos", photo_id)
     try:
@@ -504,14 +495,12 @@ def set_assignment(
 # Review and export
 
 
-def _revision(conn: sqlite3.Connection, project_id: str, revision_id: str) -> sqlite3.Row:
+def _revision(conn: db.Conn, project_id: str, revision_id: str) -> db.Row:
     return access.owner_row(conn, project_id, "revisions", revision_id)
 
 
 @router.post("/{project_id}/revisions/{revision_id}/approve")
-def approve(
-    project_id: str, revision_id: str, body: ReviewIn, request: Request, conn: sqlite3.Connection = Depends(get_conn)
-):
+def approve(project_id: str, revision_id: str, body: ReviewIn, request: Request, conn: db.Conn = Depends(get_conn)):
     owner, p = _ctx(request, conn, project_id)
     services.review(conn, _revision(conn, p["id"], revision_id), owner.user_id, "approved", body.note)
     return {"ok": True}
@@ -519,7 +508,7 @@ def approve(
 
 @router.post("/{project_id}/revisions/{revision_id}/request-changes")
 def request_changes(
-    project_id: str, revision_id: str, body: ReviewIn, request: Request, conn: sqlite3.Connection = Depends(get_conn)
+    project_id: str, revision_id: str, body: ReviewIn, request: Request, conn: db.Conn = Depends(get_conn)
 ):
     owner, p = _ctx(request, conn, project_id)
     try:
@@ -530,9 +519,7 @@ def request_changes(
 
 
 @router.put("/{project_id}/photos/{photo_id}/final")
-def set_final(
-    project_id: str, photo_id: str, body: FinalIn, request: Request, conn: sqlite3.Connection = Depends(get_conn)
-):
+def set_final(project_id: str, photo_id: str, body: FinalIn, request: Request, conn: db.Conn = Depends(get_conn)):
     owner, p = _ctx(request, conn, project_id)
     photo = access.owner_row(conn, p["id"], "photos", photo_id)
     revision = None
@@ -548,7 +535,7 @@ def set_final(
 
 
 @router.post("/{project_id}/exports", status_code=202)
-def start_export(project_id: str, body: ExportIn, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def start_export(project_id: str, body: ExportIn, request: Request, conn: db.Conn = Depends(get_conn)):
     owner, p = _ctx(request, conn, project_id)
     with db.transaction(conn):
         job_id = jobs.enqueue(
@@ -562,7 +549,7 @@ def start_export(project_id: str, body: ExportIn, request: Request, conn: sqlite
 
 
 @router.get("/{project_id}/exports")
-def list_exports(project_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def list_exports(project_id: str, request: Request, conn: db.Conn = Depends(get_conn)):
     _, p = _ctx(request, conn, project_id)
     rows = db.all_rows(
         conn,

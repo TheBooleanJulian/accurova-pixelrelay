@@ -6,7 +6,6 @@ validate state transitions.
 from __future__ import annotations
 
 import io
-import sqlite3
 from datetime import timedelta
 from pathlib import PurePath
 
@@ -34,7 +33,7 @@ INVITE_DAYS = 30
 
 
 def create_project(
-    conn: sqlite3.Connection,
+    conn: db.Conn,
     owner_id: str,
     name: str,
     description: str = "",
@@ -87,12 +86,12 @@ def create_project(
     return project_id
 
 
-def room_pin(conn: sqlite3.Connection, settings: Settings, project_id: str) -> tuple[str, int]:
+def room_pin(conn: db.Conn, settings: Settings, project_id: str) -> tuple[str, int]:
     row = db.one(conn, "SELECT seed, version FROM room_access_secrets WHERE project_id = ?", (project_id,))
     return derive_pin(settings.secret_key, project_id, row["seed"]), row["version"]
 
 
-def rotate_pin(conn: sqlite3.Connection, settings: Settings, project_id: str, owner_id: str) -> str:
+def rotate_pin(conn: db.Conn, settings: Settings, project_id: str, owner_id: str) -> str:
     with db.transaction(conn):
         conn.execute(
             "UPDATE room_access_secrets SET seed = ?, version = version + 1, rotated_at = ? WHERE project_id = ?",
@@ -119,7 +118,7 @@ def _clean_name(name: str) -> str:
     return cleaned
 
 
-def _add_members(conn: sqlite3.Connection, project_id: str, names: list[str]) -> list[str]:
+def _add_members(conn: db.Conn, project_id: str, names: list[str]) -> list[str]:
     row = db.one(
         conn, "SELECT COALESCE(MAX(sort_order), -1) AS m FROM project_members WHERE project_id = ?", (project_id,)
     )
@@ -133,7 +132,7 @@ def _add_members(conn: sqlite3.Connection, project_id: str, names: list[str]) ->
         seen.add(name.lower())
         exists = db.one(
             conn,
-            "SELECT 1 FROM project_members WHERE project_id = ? AND display_name = ? COLLATE NOCASE AND removed_at IS NULL",
+            "SELECT 1 FROM project_members WHERE project_id = ? AND lower(display_name) = lower(?) AND removed_at IS NULL",
             (project_id, name),
         )
         if exists:
@@ -160,7 +159,7 @@ def _add_members(conn: sqlite3.Connection, project_id: str, names: list[str]) ->
     return ids
 
 
-def add_members(conn: sqlite3.Connection, project_id: str, names: list[str], owner_id: str) -> list[str]:
+def add_members(conn: db.Conn, project_id: str, names: list[str], owner_id: str) -> list[str]:
     with db.transaction(conn):
         ids = _add_members(conn, project_id, names)
         if ids:
@@ -168,13 +167,13 @@ def add_members(conn: sqlite3.Connection, project_id: str, names: list[str], own
     return ids
 
 
-def update_member(conn: sqlite3.Connection, member: sqlite3.Row, fields: dict) -> None:
+def update_member(conn: db.Conn, member: db.Row, fields: dict) -> None:
     values = {}
     if "display_name" in fields and fields["display_name"] is not None:
         values["display_name"] = _clean_name(fields["display_name"])
         clash = db.one(
             conn,
-            "SELECT 1 FROM project_members WHERE project_id = ? AND display_name = ? COLLATE NOCASE"
+            "SELECT 1 FROM project_members WHERE project_id = ? AND lower(display_name) = lower(?)"
             " AND removed_at IS NULL AND id != ?",
             (member["project_id"], values["display_name"], member["id"]),
         )
@@ -191,7 +190,7 @@ def update_member(conn: sqlite3.Connection, member: sqlite3.Row, fields: dict) -
         db.update(conn, "project_members", member["id"], values)
 
 
-def remove_member(conn: sqlite3.Connection, member: sqlite3.Row, owner_id: str) -> None:
+def remove_member(conn: db.Conn, member: db.Row, owner_id: str) -> None:
     now = db.now_iso()
     with db.transaction(conn):
         conn.execute(
@@ -213,7 +212,7 @@ def remove_member(conn: sqlite3.Connection, member: sqlite3.Row, owner_id: str) 
         )
 
 
-def create_invite(conn: sqlite3.Connection, settings: Settings, member: sqlite3.Row) -> str:
+def create_invite(conn: db.Conn, settings: Settings, member: db.Row) -> str:
     token = random_token()
     now = db.now_iso()
     with db.transaction(conn):
@@ -239,7 +238,7 @@ def create_invite(conn: sqlite3.Connection, settings: Settings, member: sqlite3.
 
 
 def create_room_session(
-    conn: sqlite3.Connection,
+    conn: db.Conn,
     settings: Settings,
     project_id: str,
     *,
@@ -272,7 +271,7 @@ def create_room_session(
     return token
 
 
-def redeem_invite(conn: sqlite3.Connection, settings: Settings, token: str, device: str) -> tuple[sqlite3.Row, str]:
+def redeem_invite(conn: db.Conn, settings: Settings, token: str, device: str) -> tuple[db.Row, str]:
     """Single-use: binds this device to the invited participant. Returns (project, session token)."""
     row = db.one(
         conn,
@@ -297,7 +296,7 @@ def redeem_invite(conn: sqlite3.Connection, settings: Settings, token: str, devi
     return project, session
 
 
-def bind_member(conn: sqlite3.Connection, session: sqlite3.Row, member_id: str) -> sqlite3.Row:
+def bind_member(conn: db.Conn, session: db.Row, member_id: str) -> db.Row:
     member = db.one(
         conn,
         "SELECT * FROM project_members WHERE id = ? AND project_id = ? AND removed_at IS NULL",
@@ -319,7 +318,7 @@ def bind_member(conn: sqlite3.Connection, session: sqlite3.Row, member_id: str) 
 
 
 def add_original(
-    conn: sqlite3.Connection,
+    conn: db.Conn,
     storage: StorageProvider,
     settings: Settings,
     project_id: str,
@@ -376,7 +375,7 @@ def add_original(
     return photo_id
 
 
-def photo_state(photo: sqlite3.Row, assignment: sqlite3.Row | None, latest: sqlite3.Row | None) -> str:
+def photo_state(photo: db.Row, assignment: db.Row | None, latest: db.Row | None) -> str:
     if photo["final_revision_id"]:
         return "final"
     if assignment:
@@ -390,7 +389,7 @@ def photo_state(photo: sqlite3.Row, assignment: sqlite3.Row | None, latest: sqli
     return "unassigned"
 
 
-def list_photos(conn: sqlite3.Connection, project_id: str) -> list[dict]:
+def list_photos(conn: db.Conn, project_id: str) -> list[dict]:
     photos = db.all_rows(conn, "SELECT * FROM photos WHERE project_id = ? ORDER BY sort_order", (project_id,))
     active = {
         r["photo_id"]: r
@@ -442,7 +441,7 @@ def list_photos(conn: sqlite3.Connection, project_id: str) -> list[dict]:
     return out
 
 
-def progress(conn: sqlite3.Connection, project_id: str) -> dict:
+def progress(conn: db.Conn, project_id: str) -> dict:
     states = {s: 0 for s in PHOTO_STATES}
     photos = list_photos(conn, project_id)
     for p in photos:
@@ -465,7 +464,7 @@ def progress(conn: sqlite3.Connection, project_id: str) -> dict:
 # Assignments
 
 
-def _members(conn: sqlite3.Connection, project_id: str) -> list[sqlite3.Row]:
+def _members(conn: db.Conn, project_id: str) -> list[db.Row]:
     return db.all_rows(
         conn,
         "SELECT * FROM project_members WHERE project_id = ? AND removed_at IS NULL ORDER BY sort_order",
@@ -473,7 +472,7 @@ def _members(conn: sqlite3.Connection, project_id: str) -> list[sqlite3.Row]:
     )
 
 
-def loads(conn: sqlite3.Connection, project_id: str) -> dict[str, int]:
+def loads(conn: db.Conn, project_id: str) -> dict[str, int]:
     return {
         r["member_id"]: r["n"]
         for r in db.all_rows(
@@ -484,7 +483,7 @@ def loads(conn: sqlite3.Connection, project_id: str) -> dict[str, int]:
     }
 
 
-def preview_distribution(conn: sqlite3.Connection, project_id: str) -> Plan:
+def preview_distribution(conn: db.Conn, project_id: str) -> Plan:
     current = loads(conn, project_id)
     people = [
         Contributor(
@@ -504,7 +503,7 @@ def preview_distribution(conn: sqlite3.Connection, project_id: str) -> Plan:
 
 
 def assign(
-    conn: sqlite3.Connection,
+    conn: db.Conn,
     project_id: str,
     photo_id: str,
     member_id: str | None,
@@ -580,7 +579,7 @@ def assign(
     return {"changed": True, "kept_revisions": kept}
 
 
-def publish_plan(conn: sqlite3.Connection, project_id: str, items: list[dict], owner_id: str) -> int:
+def publish_plan(conn: db.Conn, project_id: str, items: list[dict], owner_id: str) -> int:
     count = 0
     with db.transaction(conn):
         for item in items:
@@ -592,7 +591,7 @@ def publish_plan(conn: sqlite3.Connection, project_id: str, items: list[dict], o
     return count
 
 
-def set_assignment_status(conn: sqlite3.Connection, photo_id: str, member_id: str, status: str) -> None:
+def set_assignment_status(conn: db.Conn, photo_id: str, member_id: str, status: str) -> None:
     conn.execute(
         "UPDATE assignments SET status = ?, updated_at = ? WHERE photo_id = ? AND member_id = ? AND active = 1",
         (status, db.now_iso(), photo_id, member_id),
@@ -604,11 +603,11 @@ def set_assignment_status(conn: sqlite3.Connection, photo_id: str, member_id: st
 
 
 def create_draft(
-    conn: sqlite3.Connection,
+    conn: db.Conn,
     storage: StorageProvider,
     settings: Settings,
     project_id: str,
-    photo: sqlite3.Row,
+    photo: db.Row,
     member_id: str,
     filename: str,
     data: bytes,
@@ -676,7 +675,7 @@ def create_draft(
 
 
 def request_remask(
-    conn: sqlite3.Connection, draft: sqlite3.Row, sensitivity: str | None, manual: dict | None, auto_align: bool = False
+    conn: db.Conn, draft: db.Row, sensitivity: str | None, manual: dict | None, auto_align: bool = False
 ) -> None:
     if draft["status"] in ("submitting", "submitted", "processing"):
         raise Conflict("This edit is busy or already submitted.")
@@ -696,9 +695,9 @@ def request_remask(
 
 
 def save_mask(
-    conn: sqlite3.Connection,
+    conn: db.Conn,
     storage: StorageProvider,
-    draft: sqlite3.Row,
+    draft: db.Row,
     png: bytes,
     source: str,
 ) -> str:
@@ -752,7 +751,7 @@ def save_mask(
     return mask_id
 
 
-def submit_draft(conn: sqlite3.Connection, draft: sqlite3.Row, mask_id: str, note: str) -> None:
+def submit_draft(conn: db.Conn, draft: db.Row, mask_id: str, note: str) -> None:
     if draft["status"] == "blocked":
         alignment = db.loads(draft["alignment_json"], {})
         if alignment.get("placement", {}).get("method") != "manual":
@@ -777,7 +776,7 @@ def submit_draft(conn: sqlite3.Connection, draft: sqlite3.Row, mask_id: str, not
         )
 
 
-def reopen_revision(conn: sqlite3.Connection, revision: sqlite3.Row) -> str:
+def reopen_revision(conn: db.Conn, revision: db.Row) -> str:
     """Start a new draft from an earlier submission: same upload and mask, new revision on submit."""
     old = db.one(conn, "SELECT * FROM merge_drafts WHERE id = ?", (revision["draft_id"],))
     draft_id = db.new_id()
@@ -850,7 +849,7 @@ def reopen_revision(conn: sqlite3.Connection, revision: sqlite3.Row) -> str:
 # Review
 
 
-def review(conn: sqlite3.Connection, revision: sqlite3.Row, owner_id: str, decision: str, note: str) -> None:
+def review(conn: db.Conn, revision: db.Row, owner_id: str, decision: str, note: str) -> None:
     if decision not in ("approved", "changes_requested"):
         raise Conflict("Unknown decision.")
     if decision == "changes_requested" and not note.strip():
@@ -894,7 +893,7 @@ def review(conn: sqlite3.Connection, revision: sqlite3.Row, owner_id: str, decis
         )
 
 
-def select_final(conn: sqlite3.Connection, photo: sqlite3.Row, revision: sqlite3.Row | None, owner_id: str) -> None:
+def select_final(conn: db.Conn, photo: db.Row, revision: db.Row | None, owner_id: str) -> None:
     if revision is not None and revision["status"] != "approved":
         raise Conflict("Approve this edit before choosing it as the final version.")
     with db.transaction(conn):
@@ -927,7 +926,7 @@ def select_final(conn: sqlite3.Connection, photo: sqlite3.Row, revision: sqlite3
         )
 
 
-def revision_dict(r: sqlite3.Row, include_member: str | None = None) -> dict:
+def revision_dict(r: db.Row, include_member: str | None = None) -> dict:
     d = {
         "id": r["id"],
         "photo_id": r["photo_id"],
@@ -951,7 +950,7 @@ def revision_dict(r: sqlite3.Row, include_member: str | None = None) -> dict:
     return d
 
 
-def draft_dict(conn: sqlite3.Connection, d: sqlite3.Row) -> dict:
+def draft_dict(conn: db.Conn, d: db.Row) -> dict:
     mask = db.one(conn, "SELECT * FROM masks WHERE id = ?", (d["current_mask_id"],)) if d["current_mask_id"] else None
     photo = db.one(conn, "SELECT preview_asset_id, width, height FROM photos WHERE id = ?", (d["photo_id"],))
     ws = work_size(photo["width"], photo["height"])
