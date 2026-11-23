@@ -14,7 +14,6 @@ are not revealed to outsiders.
 
 from __future__ import annotations
 
-import sqlite3
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -47,7 +46,7 @@ class Owner:
     session_id: str
 
 
-def _touch(conn: sqlite3.Connection, table: str, row: sqlite3.Row, days: int) -> None:
+def _touch(conn: db.Conn, table: str, row: db.Row, days: int) -> None:
     last = db.parse_iso(row["last_seen_at"])
     if db.parse_iso(db.now_iso()) - last >= TOUCH_EVERY:
         conn.execute(
@@ -56,7 +55,7 @@ def _touch(conn: sqlite3.Connection, table: str, row: sqlite3.Row, days: int) ->
         )
 
 
-def current_owner(request: Request, conn: sqlite3.Connection) -> Owner | None:
+def current_owner(request: Request, conn: db.Conn) -> Owner | None:
     token = request.cookies.get(OWNER_COOKIE)
     if not token:
         return None
@@ -73,21 +72,21 @@ def current_owner(request: Request, conn: sqlite3.Connection) -> Owner | None:
     return Owner(row["user_id"], row["email"], row["id"])
 
 
-def require_owner(request: Request, conn: sqlite3.Connection) -> Owner:
+def require_owner(request: Request, conn: db.Conn) -> Owner:
     owner = current_owner(request, conn)
     if not owner:
         raise HTTPException(status_code=401, detail="Sign in to continue.")
     return owner
 
 
-def owner_project(conn: sqlite3.Connection, owner: Owner, project_id: str) -> sqlite3.Row:
+def owner_project(conn: db.Conn, owner: Owner, project_id: str) -> db.Row:
     row = db.one(conn, "SELECT * FROM projects WHERE id = ? AND owner_id = ?", (project_id, owner.user_id))
     if not row:
         raise not_found("Project not found.")
     return row
 
 
-def owner_row(conn: sqlite3.Connection, project_id: str, table: str, row_id: str) -> sqlite3.Row:
+def owner_row(conn: db.Conn, project_id: str, table: str, row_id: str) -> db.Row:
     """Fetch a row of `table` that must belong to `project_id` (else 404)."""
     row = db.one(conn, f"SELECT * FROM {table} WHERE id = ? AND project_id = ?", (row_id, project_id))
     if not row:
@@ -101,16 +100,16 @@ def owner_row(conn: sqlite3.Connection, project_id: str, table: str, row_id: str
 
 @dataclass
 class Room:
-    project: sqlite3.Row
-    session: sqlite3.Row | None
-    member: sqlite3.Row | None
+    project: db.Row
+    session: db.Row | None
+    member: db.Row | None
 
     @property
     def project_id(self) -> str:
         return self.project["id"]
 
 
-def room_session(request: Request, conn: sqlite3.Connection, project: sqlite3.Row) -> sqlite3.Row | None:
+def room_session(request: Request, conn: db.Conn, project: db.Row) -> db.Row | None:
     token = request.cookies.get(room_cookie_name(project["slug"]))
     if not token:
         return None
@@ -131,7 +130,7 @@ def room_session(request: Request, conn: sqlite3.Connection, project: sqlite3.Ro
     return row
 
 
-def resolve_room(request: Request, conn: sqlite3.Connection, slug: str) -> Room:
+def resolve_room(request: Request, conn: db.Conn, slug: str) -> Room:
     project = db.one(conn, "SELECT * FROM projects WHERE slug = ?", (slug,))
     if not project or project["status"] != "active":
         raise not_found("This project link is not valid.")
@@ -146,21 +145,21 @@ def resolve_room(request: Request, conn: sqlite3.Connection, slug: str) -> Room:
     return Room(project, session, member)
 
 
-def require_room_pass(request: Request, conn: sqlite3.Connection, slug: str) -> Room:
+def require_room_pass(request: Request, conn: db.Conn, slug: str) -> Room:
     room = resolve_room(request, conn, slug)
     if not room.session:
         raise HTTPException(status_code=401, detail="Enter the Room PIN to continue.")
     return room
 
 
-def require_contributor(request: Request, conn: sqlite3.Connection, slug: str) -> Room:
+def require_contributor(request: Request, conn: db.Conn, slug: str) -> Room:
     room = require_room_pass(request, conn, slug)
     if not room.member:
         raise HTTPException(status_code=409, detail="Choose your name first.")
     return room
 
 
-def active_assignment(conn: sqlite3.Connection, photo_id: str, member_id: str) -> sqlite3.Row | None:
+def active_assignment(conn: db.Conn, photo_id: str, member_id: str) -> db.Row | None:
     return db.one(
         conn,
         "SELECT * FROM assignments WHERE photo_id = ? AND member_id = ? AND active = 1",
@@ -168,7 +167,7 @@ def active_assignment(conn: sqlite3.Connection, photo_id: str, member_id: str) -
     )
 
 
-def contributor_photo(conn: sqlite3.Connection, room: Room, photo_id: str, *, need_active: bool) -> sqlite3.Row:
+def contributor_photo(conn: db.Conn, room: Room, photo_id: str, *, need_active: bool) -> db.Row:
     """A photo the contributor is (or, for history, was) assigned to."""
     photo = db.one(conn, "SELECT * FROM photos WHERE id = ? AND project_id = ?", (photo_id, room.project_id))
     if not photo:
@@ -185,7 +184,7 @@ def contributor_photo(conn: sqlite3.Connection, room: Room, photo_id: str, *, ne
 # Files
 
 
-def can_read_asset(conn: sqlite3.Connection, asset: sqlite3.Row, owner: Owner | None, room: Room | None) -> bool:
+def can_read_asset(conn: db.Conn, asset: db.Row, owner: Owner | None, room: Room | None) -> bool:
     if owner:
         project = db.one(conn, "SELECT owner_id FROM projects WHERE id = ?", (asset["project_id"],))
         if project and project["owner_id"] == owner.user_id:

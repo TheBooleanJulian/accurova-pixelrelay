@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import io
 import logging
-import sqlite3
 import threading
 import time
 import traceback
@@ -41,10 +40,9 @@ class PermanentError(Exception):
 class Context:
     settings: object
     storage: object
-    db_path: object
 
-    def connect(self) -> sqlite3.Connection:
-        return db.connect(self.db_path)
+    def connect(self) -> db.Conn:
+        return db.connect_settings(self.settings)
 
 
 def handler(kind: str):
@@ -63,7 +61,7 @@ def on_failure(kind: str):
     return deco
 
 
-def enqueue(conn: sqlite3.Connection, kind: str, payload: dict, project_id: str | None, max_attempts: int = 3) -> str:
+def enqueue(conn: db.Conn, kind: str, payload: dict, project_id: str | None, max_attempts: int = 3) -> str:
     job_id = db.new_id()
     now = db.now_iso()
     db.insert(
@@ -89,12 +87,13 @@ def enqueue(conn: sqlite3.Connection, kind: str, payload: dict, project_id: str 
     return job_id
 
 
-def claim(conn: sqlite3.Connection) -> sqlite3.Row | None:
+def claim(conn: db.Conn) -> db.Row | None:
     now = time.time()
+    lock = " FOR UPDATE SKIP LOCKED" if conn.dialect == "postgres" else ""
     return conn.execute(
         "UPDATE jobs SET status = 'running', attempts = attempts + 1, lease_until = ?, updated_at = ?"
         " WHERE id = (SELECT id FROM jobs WHERE (status = 'queued' AND run_after <= ?)"
-        "             OR (status = 'running' AND lease_until < ?) ORDER BY run_after LIMIT 1)"
+        f"             OR (status = 'running' AND lease_until < ?) ORDER BY run_after LIMIT 1{lock})"
         " RETURNING *",
         (now + LEASE_SECONDS, db.now_iso(), now, now),
     ).fetchone()
@@ -178,19 +177,19 @@ class Worker(threading.Thread):
 # Handlers. Imports are local to keep module import cheap and avoid cycles.
 
 
-def _asset(conn: sqlite3.Connection, asset_id: str) -> sqlite3.Row:
+def _asset(conn: db.Conn, asset_id: str) -> db.Row:
     row = db.one(conn, "SELECT * FROM assets WHERE id = ?", (asset_id,))
     if not row:
         raise PermanentError("A file is missing.")
     return row
 
 
-def _read(ctx: Context, conn: sqlite3.Connection, asset_id: str) -> bytes:
+def _read(ctx: Context, conn: db.Conn, asset_id: str) -> bytes:
     return ctx.storage.read(_asset(conn, asset_id)["storage_key"])
 
 
 @handler("photo.derivatives")
-def photo_derivatives(ctx: Context, conn: sqlite3.Connection, payload: dict) -> dict:
+def photo_derivatives(ctx: Context, conn: db.Conn, payload: dict) -> dict:
     from .images import derivatives, load_rgb
     from .storage import save_asset
 
@@ -230,7 +229,7 @@ def photo_derivatives_failed(ctx, conn, payload, message):
     conn.execute("UPDATE photos SET processing = 'failed' WHERE id = ?", (payload["photo_id"],))
 
 
-def _load_pair(ctx: Context, conn: sqlite3.Connection, draft: sqlite3.Row):
+def _load_pair(ctx: Context, conn: db.Conn, draft: db.Row):
     from .images import load_rgb, to_profile
 
     photo = db.one(conn, "SELECT * FROM photos WHERE id = ?", (draft["photo_id"],))
@@ -247,7 +246,7 @@ def _load_pair(ctx: Context, conn: sqlite3.Connection, draft: sqlite3.Row):
 
 
 @handler("draft.analyse")
-def draft_analyse(ctx: Context, conn: sqlite3.Connection, payload: dict) -> dict:
+def draft_analyse(ctx: Context, conn: db.Conn, payload: dict) -> dict:
     """Align the upload (when asked), build the Smart Merge mask and the editor previews."""
     from . import merge
     from .images import encode_jpeg, encode_png, to_profile, work_size
@@ -376,7 +375,7 @@ def draft_analyse_failed(ctx, conn, payload, message):
 
 
 @handler("draft.composite")
-def draft_composite(ctx: Context, conn: sqlite3.Connection, payload: dict) -> dict:
+def draft_composite(ctx: Context, conn: db.Conn, payload: dict) -> dict:
     """Full-resolution composite onto the original, then an immutable revision."""
     from . import merge
     from .images import encode_jpeg, encode_png, to_profile, work_size
@@ -501,7 +500,7 @@ def draft_composite_failed(ctx, conn, payload, message):
 
 
 @handler("project.export")
-def project_export(ctx: Context, conn: sqlite3.Connection, payload: dict) -> dict:
+def project_export(ctx: Context, conn: db.Conn, payload: dict) -> dict:
     """ZIP of every final version (high-res). JPEG at quality 95 or lossless PNG."""
     from .images import encode_jpeg
     from .storage import save_asset

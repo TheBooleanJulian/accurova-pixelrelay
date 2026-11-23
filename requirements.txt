@@ -4,3 +4,4 @@ uvicorn==0.54.0           # ASGI server
 python-multipart==0.0.34  # multipart uploads (photos, edits, masks)
 numpy==2.5.5              # Smart Merge: alignment, difference detection, morphology
 pillow==13.0.0            # image decoding, EXIF orientation, ICC colour, resizing, compositing
+psycopg[binary]==3.3.9    # Postgres (Supabase) in production: the stdlib has no Postgres client

@@ -11,6 +11,22 @@ browser ──HTTP──▶ FastAPI routes ──▶ services ──▶ SQLite
 worker thread/process ──claim──▶ jobs ──▶ merge.py / images.py ──▶ storage + SQLite
 ```
 
+### On Cloudflare (production)
+
+The same process runs in one Cloudflare Container. `db.py` and `storage.py` switch backends from settings, and nothing else in the app knows the difference.
+
+```
+browser ──▶ Worker accurova-pixelrelay (cloudflare/worker.js, forwards everything)
+              └──▶ Durable Object "main" ──▶ Container (the Dockerfile image, standard-1, sleeps after 15 min idle)
+                                               ├──▶ Supabase session pooler ──▶ schema accurova_pixelrelay (TLS, app role)
+                                               ├──▶ R2 S3 API ──▶ bucket accurova-pixelrelay (bucket-scoped token)
+                                               └──▶ Supabase Auth (owner magic links)
+```
+
+- The first request after a sleep starts the container (Python, numpy, first database connection). The Worker waits up to 90 s and otherwise answers 503 "starting up".
+- If a sleep or restart interrupts a job, the job's lease runs out and the next worker run picks it up again. Jobs are claimed with `FOR UPDATE SKIP LOCKED`.
+- Every write transaction takes one Postgres advisory lock, so check-then-write code behaves exactly as it does under SQLite's `BEGIN IMMEDIATE`.
+
 ## Modules
 
 | Module | Role |

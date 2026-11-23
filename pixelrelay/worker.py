@@ -12,15 +12,15 @@ from . import db, jobs
 from .config import load_settings
 from .images import configure
 from .logging_setup import setup_logging
-from .storage import LocalDiskStorage
+from .storage import from_settings as storage_from_settings
 
 
 def main() -> None:
     settings = load_settings()
     setup_logging()
     configure(settings.max_image_megapixels)
-    db.init_db(settings.db_path)
-    ctx = jobs.Context(settings, LocalDiskStorage(settings.files_dir), settings.db_path)
+    db.init_db(settings.db_target, settings.db_schema)
+    ctx = jobs.Context(settings, storage_from_settings(settings))
     worker = jobs.Worker(ctx)
     signal.signal(signal.SIGTERM, lambda *_: worker.stop())
     logging.getLogger("pixelrelay").info("worker started")

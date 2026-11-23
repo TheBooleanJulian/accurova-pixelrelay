@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -21,8 +20,9 @@ from .api_room import router as room_router
 from .config import Settings, load_settings
 from .images import configure as configure_images
 from .logging_setup import setup_logging
-from .storage import LocalDiskStorage, StorageError
-from .web import get_conn
+from .storage import StorageError
+from .storage import from_settings as storage_from_settings
+from .web import file_response, get_conn
 
 WEB_DIR = Path(__file__).parent / "web"
 log = logging.getLogger("pixelrelay")
@@ -38,9 +38,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or load_settings()
     setup_logging()
     configure_images(settings.max_image_megapixels)
-    db.init_db(settings.db_path)
-    storage = LocalDiskStorage(settings.files_dir)
-    ctx = jobs.Context(settings, storage, settings.db_path)
+    db.init_db(settings.db_target, settings.db_schema)
+    storage = storage_from_settings(settings)
+    ctx = jobs.Context(settings, storage)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -51,6 +51,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         yield
         if worker:
             worker.stop()
+        db.close_pools()
 
     app = FastAPI(
         title="PixelRelay",
@@ -104,12 +105,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(invite_router)
 
     @app.get("/healthz")
-    def healthz(conn: sqlite3.Connection = Depends(get_conn)):
+    def healthz(conn: db.Conn = Depends(get_conn)):
         conn.execute("SELECT 1").fetchone()
-        return {"ok": True, "version": __version__}
+        return {"ok": True, "version": __version__, "database": conn.dialect, "storage": storage.name}
 
     @app.get("/api/files/{asset_id}")
-    def get_file(asset_id: str, request: Request, download: int = 0, conn: sqlite3.Connection = Depends(get_conn)):
+    def get_file(asset_id: str, request: Request, download: int = 0, conn: db.Conn = Depends(get_conn)):
         asset = db.one(conn, "SELECT * FROM assets WHERE id = ?", (asset_id,))
         if not asset:
             raise access.not_found()
@@ -125,17 +126,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 room = access.Room(project, session, member) if member else None
         if not access.can_read_asset(conn, asset, owner, room):
             raise access.not_found()
-        path = storage.open_path(asset["storage_key"])
         headers = {"Cache-Control": "private, max-age=31536000, immutable"}  # assets never change
         if download:
-            ext = path.suffix
+            ext = Path(asset["storage_key"]).suffix
             name = (
                 (asset["original_filename"] or f"pixelrelay-{asset['kind']}")
                 if asset["kind"] in ("original", "upload", "export")
                 else f"pixelrelay-{asset['kind']}-{asset_id[:8]}{ext}"
             )
-            return FileResponse(path, media_type=asset["content_type"], filename=name, headers=headers)
-        return FileResponse(path, media_type=asset["content_type"], headers=headers)
+            return file_response(storage, asset, filename=name, headers=headers)
+        return file_response(storage, asset, headers=headers)
 
     def page(name: str):
         def handler():

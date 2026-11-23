@@ -10,6 +10,8 @@ The brief suggested Next.js/TypeScript/Tailwind/shadcn on Vercel. The fleet defa
 
 The brief suggested Supabase Postgres with RLS. Image files live on the server's disk in V1 (see D5), and one process serves all requests and runs the jobs. A database on the same volume is the simplest consistent unit: one backup, no network hop, nothing extra to run. SQLite is the fleet default. The schema uses portable SQL (TEXT UUIDs, ISO timestamps, partial indexes) and every query lives in `services.py`, `access.py` or the routes, so moving to Supabase Postgres later is mechanical. **Revisit together with D5** if PixelRelay moves to Supabase Storage or needs several server instances. Supabase **Auth** is still used for owners, as the brief asked.
 
+**Revisited 2026-11-23 (D12):** production runs on Postgres in the shared Supabase project. SQLite stays for local development, tests and any single server with a disk.
+
 ## D3 — Julian Unified UI instead of the brief's navy/cyan palette and Manrope/Inter
 
 Unified UI is the hard global design default and new work may not invent colours or fonts (`AGENTS.md` §4 and §15.9). The brief's direction (dark photographic interface, restrained cyan, photography as the focus) already matches Unified UI: dark default, cyan for actions, magenta used sparingly. The only magenta element is the "your edit is used" highlight. Tokens are copied from `thebooleanjulian-branding/dist/tokens.css`. Fonts are Chakra Petch, IBM Plex Sans and JetBrains Mono. The logo is a placeholder pixel-cluster mark and is easy to replace.
@@ -28,6 +30,8 @@ Pillow covers decoding, EXIF orientation, ICC conversion, resizing and alpha com
 ## D5 — Local-disk storage behind a provider interface
 
 `storage.StorageProvider` has four methods. `LocalDiskStorage` is write-once: it refuses to overwrite a key. The database stores only `(provider, key)`. Google Drive or Supabase Storage adapters can be added without schema changes. Drive OAuth was deliberately not allowed to block the first slice, as the brief advised.
+
+**Revisited 2026-11-23 (D12):** production stores files in R2 (`R2Storage`, write-once with a conditional PUT). The interface is now three methods (`put`, `read`, `exists`); `open_path` is local-disk only.
 
 ## D6 — Background jobs in a SQLite queue, worker thread by default
 
@@ -52,3 +56,29 @@ The brief asks for linting and formatting. No fleet standard exists yet (`AGENTS
 ## D11 — End-to-end tests drive the browser over raw CDP
 
 Same approach as accurova-graphene: a dependency-free Node script (`tests/e2e/cdp.mjs`) drives headless Edge or Chrome, with no Playwright install. It uses separate browser contexts, so the owner and the contributor have separate cookies.
+
+## D12 — Production on a Cloudflare Container, data in the shared Supabase project, files in R2 (2026-11-23)
+
+Julian chose: public repo, Cloudflare (Workers Paid is on since 2026-10-28), and the shared Supabase project with
+PixelRelay in its own schema, which is the fleet's migration standard. What that means in practice:
+
+- **Container, not a Worker port.** Smart Merge is numpy/Pillow work on photos of up to 120 MP: it needs a real
+  Python process and up to a few hundred MB of memory per job. A Worker can't do that, so a Durable Object-managed
+  Container runs the existing image. The Worker in `cloudflare/worker.js` only forwards requests, which is the same
+  pattern as FreeLLMAPI in thebooleanjulian-llm. Instance `standard-1` (4 GiB, 1/2 vCPU): a 24 MP merge peaked at
+  about 390 MB in a measurement, and `basic` (1 GiB) would be tight for 100 MP originals. It sleeps after 15 idle
+  minutes, so a pilot costs cents.
+- **Postgres in schema `accurova_pixelrelay`.** The container's disk is wiped when it sleeps, so SQLite can't hold
+  data there. The schema is applied from thebooleanjulian-db, like every other app's, and the app connects as
+  `accurova_pixelrelay_app`, which can read and write rows but run no DDL. The same SQL runs on both backends:
+  `db.Conn` rewrites `?` placeholders, and every write transaction takes one advisory lock so it behaves like
+  SQLite's `BEGIN IMMEDIATE`. The container connects to Supabase's session pooler directly, because Hyperdrive is a
+  Worker binding a container can't use. CI runs the whole test suite on Postgres as that role.
+- **R2 over the S3 API.** It uses a bucket-scoped token and Signature V4 in about 60 lines of stdlib code. That code
+  is checked against AWS's published example and against a fake S3 server in the tests. No boto3.
+- **One new dependency: `psycopg[binary]`.** The stdlib has no Postgres client. The binary wheel bundles libpq, so
+  the image needs no system packages.
+- **Deploys from GitHub Actions on push to `main`.** The image build needs Docker, which the dev machine doesn't
+  have, so this is the same approach as thebooleanjulian-llm. Workers Builds isn't used for this repo.
+- **Rejected:** a VPS with Docker and a Tunnel (a new server to patch and back up), and Supabase Storage instead of
+  R2 (R2 egress is free and it's already the fleet's file store).

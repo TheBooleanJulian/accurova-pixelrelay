@@ -14,7 +14,6 @@ random token lives only in an HttpOnly cookie.
 from __future__ import annotations
 
 import json
-import sqlite3
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -34,11 +33,11 @@ def owner_allowed(settings: Settings, email: str) -> bool:
     return not settings.owner_emails or email.lower() in settings.owner_emails
 
 
-def upsert_user(conn: sqlite3.Connection, provider: str, subject: str, email: str) -> str:
+def upsert_user(conn: db.Conn, provider: str, subject: str, email: str) -> str:
     row = db.one(conn, "SELECT id FROM users WHERE auth_provider = ? AND auth_subject = ?", (provider, subject))
     if row:
         return row["id"]
-    row = db.one(conn, "SELECT id, auth_provider FROM users WHERE email = ?", (email,))
+    row = db.one(conn, "SELECT id, auth_provider FROM users WHERE lower(email) = lower(?)", (email,))
     if row:
         # Same email via another provider (e.g. dev then supabase): refuse to merge silently.
         raise AuthError("This email is already linked to a different sign-in method.")
@@ -58,7 +57,7 @@ def upsert_user(conn: sqlite3.Connection, provider: str, subject: str, email: st
     return user_id
 
 
-def create_owner_session(conn: sqlite3.Connection, settings: Settings, user_id: str) -> str:
+def create_owner_session(conn: db.Conn, settings: Settings, user_id: str) -> str:
     token = random_token()
     now = db.now_iso()
     db.insert(

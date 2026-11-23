@@ -7,17 +7,15 @@ Contributors see only photos assigned to them and only their own edits.
 from __future__ import annotations
 
 import logging
-import sqlite3
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
-from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from . import access, db, ratelimit, services
 from .images import ImageRejected
 from .security import device_label, ip_hash, normalise_pin, pin_matches, room_cookie_name
 from .services import Conflict
-from .web import clear_cookie, client_ip, conflict, get_conn, read_upload, set_cookie
+from .web import clear_cookie, client_ip, conflict, file_response, get_conn, read_upload, set_cookie
 
 router = APIRouter(prefix="/api/rooms/{slug}")
 invite_router = APIRouter(prefix="/api/invites")
@@ -68,7 +66,7 @@ STATE_LABELS = {
 }
 
 
-def _state(request: Request, conn: sqlite3.Connection, room: access.Room) -> dict:
+def _state(request: Request, conn: db.Conn, room: access.Room) -> dict:
     if not room.session:
         return {"state": "need_pin"}
     base = {
@@ -97,12 +95,12 @@ def _state(request: Request, conn: sqlite3.Connection, room: access.Room) -> dic
 
 
 @router.get("")
-def room_state(slug: str, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def room_state(slug: str, request: Request, conn: db.Conn = Depends(get_conn)):
     return _state(request, conn, access.resolve_room(request, conn, slug))
 
 
 @router.post("/join")
-def join(slug: str, body: PinIn, request: Request, response: Response, conn: sqlite3.Connection = Depends(get_conn)):
+def join(slug: str, body: PinIn, request: Request, response: Response, conn: db.Conn = Depends(get_conn)):
     settings = request.app.state.settings
     room = access.resolve_room(request, conn, slug)
     project = room.project
@@ -143,14 +141,14 @@ def join(slug: str, body: PinIn, request: Request, response: Response, conn: sql
 
 
 @router.get("/people")
-def people(slug: str, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def people(slug: str, request: Request, conn: db.Conn = Depends(get_conn)):
     room = access.require_room_pass(request, conn, slug)
     rows = services._members(conn, room.project_id)
     return {"people": [{"id": m["id"], "name": m["display_name"], "invite_only": bool(m["invite_only"])} for m in rows]}
 
 
 @router.post("/identify")
-def identify(slug: str, body: IdentifyIn, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def identify(slug: str, body: IdentifyIn, request: Request, conn: db.Conn = Depends(get_conn)):
     room = access.require_room_pass(request, conn, slug)
     try:
         with db.transaction(conn):
@@ -161,7 +159,7 @@ def identify(slug: str, body: IdentifyIn, request: Request, conn: sqlite3.Connec
 
 
 @router.post("/not-me")
-def not_me(slug: str, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def not_me(slug: str, request: Request, conn: db.Conn = Depends(get_conn)):
     room = access.require_room_pass(request, conn, slug)
     if room.session["via"] == "invite":
         raise conflict("This device joined with a personal invitation. Use Leave instead.")
@@ -170,7 +168,7 @@ def not_me(slug: str, request: Request, conn: sqlite3.Connection = Depends(get_c
 
 
 @router.post("/leave")
-def leave(slug: str, request: Request, response: Response, conn: sqlite3.Connection = Depends(get_conn)):
+def leave(slug: str, request: Request, response: Response, conn: db.Conn = Depends(get_conn)):
     room = access.resolve_room(request, conn, slug)
     if room.session:
         conn.execute("UPDATE contributor_sessions SET revoked_at = ? WHERE id = ?", (db.now_iso(), room.session["id"]))
@@ -179,7 +177,7 @@ def leave(slug: str, request: Request, response: Response, conn: sqlite3.Connect
 
 
 @router.post("/me/availability")
-def availability(slug: str, body: AvailabilityIn, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def availability(slug: str, body: AvailabilityIn, request: Request, conn: db.Conn = Depends(get_conn)):
     room = access.require_contributor(request, conn, slug)
     services.update_member(conn, room.member, {"opted_in": body.opted_in, "capacity": body.capacity})
     db.log_event(
@@ -197,7 +195,7 @@ def availability(slug: str, body: AvailabilityIn, request: Request, conn: sqlite
 # My photos
 
 
-def _my_photo(conn: sqlite3.Connection, room: access.Room, photo: sqlite3.Row) -> dict:
+def _my_photo(conn: db.Conn, room: access.Room, photo: db.Row) -> dict:
     member_id = room.member["id"]
     a = access.active_assignment(conn, photo["id"], member_id)
     latest = db.one(
@@ -246,7 +244,7 @@ def _my_photo(conn: sqlite3.Connection, room: access.Room, photo: sqlite3.Row) -
 
 
 @router.get("/photos")
-def my_photos(slug: str, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def my_photos(slug: str, request: Request, conn: db.Conn = Depends(get_conn)):
     room = access.require_contributor(request, conn, slug)
     rows = db.all_rows(
         conn,
@@ -258,14 +256,14 @@ def my_photos(slug: str, request: Request, conn: sqlite3.Connection = Depends(ge
 
 
 @router.get("/photos/{photo_id}")
-def my_photo(slug: str, photo_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def my_photo(slug: str, photo_id: str, request: Request, conn: db.Conn = Depends(get_conn)):
     room = access.require_contributor(request, conn, slug)
     photo = access.contributor_photo(conn, room, photo_id, need_active=False)
     return _my_photo(conn, room, photo)
 
 
 @router.get("/photos/{photo_id}/original")
-def download_original(slug: str, photo_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def download_original(slug: str, photo_id: str, request: Request, conn: db.Conn = Depends(get_conn)):
     room = access.require_contributor(request, conn, slug)
     photo = access.contributor_photo(conn, room, photo_id, need_active=True)
     asset = db.one(conn, "SELECT * FROM assets WHERE id = ?", (photo["original_asset_id"],))
@@ -274,16 +272,15 @@ def download_original(slug: str, photo_id: str, request: Request, conn: sqlite3.
         " WHERE photo_id = ? AND member_id = ? AND active = 1",
         (db.now_iso(), photo_id, room.member["id"]),
     )
-    path = request.app.state.storage.open_path(asset["storage_key"])
-    return FileResponse(
-        path,
-        media_type=asset["content_type"],
+    return file_response(
+        request.app.state.storage,
+        asset,
         filename=asset["original_filename"] or f"{photo['title']}.{asset['format'].lower()}",
     )
 
 
 @router.post("/photos/{photo_id}/editing")
-def mark_editing(slug: str, photo_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def mark_editing(slug: str, photo_id: str, request: Request, conn: db.Conn = Depends(get_conn)):
     room = access.require_contributor(request, conn, slug)
     access.contributor_photo(conn, room, photo_id, need_active=True)
     a = access.active_assignment(conn, photo_id, room.member["id"])
@@ -298,7 +295,7 @@ def upload_edit(
     photo_id: str,
     request: Request,
     file: UploadFile = File(...),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: db.Conn = Depends(get_conn),
 ):
     room = access.require_contributor(request, conn, slug)
     photo = access.contributor_photo(conn, room, photo_id, need_active=True)
@@ -325,7 +322,7 @@ def upload_edit(
 # Drafts (Smart Merge / brush) and submission
 
 
-def _draft(conn: sqlite3.Connection, room: access.Room, draft_id: str) -> sqlite3.Row:
+def _draft(conn: db.Conn, room: access.Room, draft_id: str) -> db.Row:
     row = db.one(
         conn,
         "SELECT * FROM merge_drafts WHERE id = ? AND project_id = ? AND member_id = ?",
@@ -336,19 +333,19 @@ def _draft(conn: sqlite3.Connection, room: access.Room, draft_id: str) -> sqlite
     return row
 
 
-def _require_active(conn: sqlite3.Connection, room: access.Room, draft: sqlite3.Row) -> None:
+def _require_active(conn: db.Conn, room: access.Room, draft: db.Row) -> None:
     if not access.active_assignment(conn, draft["photo_id"], room.member["id"]):
         raise access.forbidden("This photo is no longer assigned to you. Your earlier edits are kept.")
 
 
 @router.get("/drafts/{draft_id}")
-def get_draft(slug: str, draft_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def get_draft(slug: str, draft_id: str, request: Request, conn: db.Conn = Depends(get_conn)):
     room = access.require_contributor(request, conn, slug)
     return services.draft_dict(conn, _draft(conn, room, draft_id))
 
 
 @router.post("/drafts/{draft_id}/smart")
-def smart(slug: str, draft_id: str, body: SmartIn, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def smart(slug: str, draft_id: str, body: SmartIn, request: Request, conn: db.Conn = Depends(get_conn)):
     room = access.require_contributor(request, conn, slug)
     draft = _draft(conn, room, draft_id)
     _require_active(conn, room, draft)
@@ -360,7 +357,7 @@ def smart(slug: str, draft_id: str, body: SmartIn, request: Request, conn: sqlit
 
 
 @router.post("/drafts/{draft_id}/align")
-def align(slug: str, draft_id: str, body: AlignIn, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def align(slug: str, draft_id: str, body: AlignIn, request: Request, conn: db.Conn = Depends(get_conn)):
     room = access.require_contributor(request, conn, slug)
     draft = _draft(conn, room, draft_id)
     _require_active(conn, room, draft)
@@ -380,7 +377,7 @@ def save_mask(
     request: Request,
     file: UploadFile = File(...),
     source: str = Form("hybrid"),
-    conn: sqlite3.Connection = Depends(get_conn),
+    conn: db.Conn = Depends(get_conn),
 ):
     room = access.require_contributor(request, conn, slug)
     draft = _draft(conn, room, draft_id)
@@ -396,7 +393,7 @@ def save_mask(
 
 
 @router.post("/drafts/{draft_id}/submit", status_code=202)
-def submit(slug: str, draft_id: str, body: SubmitIn, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def submit(slug: str, draft_id: str, body: SubmitIn, request: Request, conn: db.Conn = Depends(get_conn)):
     room = access.require_contributor(request, conn, slug)
     draft = _draft(conn, room, draft_id)
     _require_active(conn, room, draft)
@@ -408,7 +405,7 @@ def submit(slug: str, draft_id: str, body: SubmitIn, request: Request, conn: sql
 
 
 @router.get("/edits")
-def my_edits(slug: str, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def my_edits(slug: str, request: Request, conn: db.Conn = Depends(get_conn)):
     room = access.require_contributor(request, conn, slug)
     rows = db.all_rows(
         conn,
@@ -432,7 +429,7 @@ def my_edits(slug: str, request: Request, conn: sqlite3.Connection = Depends(get
 
 
 @router.post("/revisions/{revision_id}/reopen", status_code=201)
-def reopen(slug: str, revision_id: str, request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def reopen(slug: str, revision_id: str, request: Request, conn: db.Conn = Depends(get_conn)):
     room = access.require_contributor(request, conn, slug)
     rev = db.one(
         conn,
@@ -452,7 +449,7 @@ def reopen(slug: str, revision_id: str, request: Request, conn: sqlite3.Connecti
 
 
 @invite_router.post("/redeem")
-def redeem(body: InviteIn, request: Request, response: Response, conn: sqlite3.Connection = Depends(get_conn)):
+def redeem(body: InviteIn, request: Request, response: Response, conn: db.Conn = Depends(get_conn)):
     settings = request.app.state.settings
     try:
         project, token = services.redeem_invite(
@@ -465,7 +462,7 @@ def redeem(body: InviteIn, request: Request, response: Response, conn: sqlite3.C
 
 
 @invite_router.get("/rooms")
-def device_rooms(request: Request, conn: sqlite3.Connection = Depends(get_conn)):
+def device_rooms(request: Request, conn: db.Conn = Depends(get_conn)):
     """Projects this device has joined (from its room cookies)."""
     rooms = []
     for name in request.cookies:

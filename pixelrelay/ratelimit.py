@@ -15,7 +15,6 @@ Three counters, all over sliding windows so they decay on their own:
 
 from __future__ import annotations
 
-import sqlite3
 import time
 from dataclasses import dataclass
 
@@ -43,7 +42,7 @@ def _delay(failures: int, free: int) -> int:
     return min(MAX_DELAY, 2 ** (failures - free + 1))
 
 
-def check(conn: sqlite3.Connection, project_id: str, ip_hash: str, now: float | None = None) -> Decision:
+def check(conn: db.Conn, project_id: str, ip_hash: str, now: float | None = None) -> Decision:
     now = time.time() if now is None else now
 
     row = db.one(
@@ -78,7 +77,7 @@ def check(conn: sqlite3.Connection, project_id: str, ip_hash: str, now: float | 
     return Decision(True, 0, suspicious)
 
 
-def record(conn: sqlite3.Connection, project_id: str, ip_hash: str, success: bool, now: float | None = None) -> None:
+def record(conn: db.Conn, project_id: str, ip_hash: str, success: bool, now: float | None = None) -> None:
     now = time.time() if now is None else now
     conn.execute(
         "INSERT INTO pin_attempts (project_id, ip_hash, success, at) VALUES (?, ?, ?, ?)",
@@ -86,6 +85,6 @@ def record(conn: sqlite3.Connection, project_id: str, ip_hash: str, success: boo
     )
 
 
-def prune(conn: sqlite3.Connection, now: float | None = None) -> None:
+def prune(conn: db.Conn, now: float | None = None) -> None:
     now = time.time() if now is None else now
     conn.execute("DELETE FROM pin_attempts WHERE at < ?", (now - 2 * PROJECT_WINDOW,))

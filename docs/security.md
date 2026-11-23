@@ -18,7 +18,10 @@ Projects hold private photographs of real people. Outsiders must not see them. C
 | Uploads | Size cap (`MAX_UPLOAD_MB`), megapixel cap (decompression-bomb guard), real decoding with Pillow (JPEG/PNG/WebP/TIFF only; SVG and HTML rejected whatever they're called), stored under the verified type. | `images.probe` |
 | CSRF | State-changing API calls must send `X-PixelRelay: 1` (a cross-site form cannot) and, if present, a same-origin `Origin`. Cookies are `SameSite=Lax`. | `app.py` middleware |
 | Headers | CSP (`script-src 'self'`, no inline scripts), `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: same-origin`, `no-store` on API responses. | `app.py` |
-| Integrity | Originals, uploads, masks, composites and revisions are immutable (SQLite triggers plus write-once storage). Approvals are append-only. | `migrations/0001_init.sql` |
+| Integrity | Originals, uploads, masks, composites and revisions are immutable: database triggers on both SQLite and Postgres, plus write-once storage (a hard link on disk, `If-None-Match: *` on R2). Approvals are append-only. | `migrations/` |
+| Database (production) | Own schema `accurova_pixelrelay` in the shared Supabase project, not exposed over the Data API. The app's role `accurova_pixelrelay_app` has row access to its own tables only: no DDL, no other schema, and it can't write its migration record. CI runs every test as that role. TLS is required to the pooler. | thebooleanjulian-db migration, `db.py` |
+| Files (production) | One private R2 bucket. The container uses an R2 token scoped to that bucket (Object Read & Write). There is no public bucket URL: every file still goes through `/api/files` and its access check. | `storage.R2Storage`, `wrangler.jsonc` |
+| Secrets (production) | Worker secrets only (`SECRET_KEY`, `DATABASE_URL`, R2 keys, Supabase anon key, `OWNER_EMAILS`), passed to the container as environment variables when it starts. None are in git, and the log filter redacts database URLs and S3 credentials. | `cloudflare/worker.js` |
 | Logging | No PINs, tokens or cookies are logged (PINs travel only in POST bodies, invitation tokens only in fragments). A redacting log filter is a second line of defence. Supabase error bodies are never echoed. | `logging_setup.py`, `auth.py` |
 | Validation | Pydantic models with length and range limits on every JSON body; dates parsed strictly. | `api_*.py` |
 
@@ -27,5 +30,5 @@ Projects hold private photographs of real people. Outsiders must not see them. C
 - Anyone with the link **and** the PIN can join and pick any name not claimed by invitation. Use personal invitation links when attribution matters.
 - The PIN cannot be stronger than six digits. If the room is flagged, or the PIN leaks beyond the group, make a new one.
 - `SECRET_KEY` is the root secret: it derives PINs and keys every token hash. Keep it only in the host's secret store. Rotating it changes all PINs and signs everyone out.
-- Rate limiting is per process (SQLite). Behind a proxy, set `TRUST_PROXY=1` so client IPs are read correctly, but only if the proxy overwrites those headers.
+- Rate limiting counts attempts in the database, so it holds across restarts. Behind a proxy, set `TRUST_PROXY=1` so client IPs are read correctly, but only if the proxy overwrites those headers. On Cloudflare it reads `CF-Connecting-IP`, which Cloudflare sets itself.
 - Production readiness still needs a pilot and a review of the deployment (TLS, backups, host hardening). See [implementation-status.md](implementation-status.md).

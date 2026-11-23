@@ -9,3 +9,6 @@ tests/e2e/out/
 .ruff_cache/
 *.sqlite3
 *.sqlite3-*
+node_modules/
+.wrangler/
+.dev.vars
