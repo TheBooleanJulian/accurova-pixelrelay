@@ -1,5 +1,6 @@
-# Portable image for any container host. Hosting for PixelRelay is not decided yet
-# (see handover.md); nothing deploys this automatically.
+# The image Cloudflare runs as PixelRelay's container (wrangler.jsonc, deployed by
+# .github/workflows/deploy.yml). It also runs on any other container host: without DATABASE_URL and
+# STORAGE_PROVIDER=r2 it falls back to SQLite + files under /data (mount a volume there).
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \

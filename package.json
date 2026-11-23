@@ -1,0 +1,12 @@
+{
+  "name": "accurova-pixelrelay",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare Worker + Container wrapper for PixelRelay (the app itself is Python; see README)",
+  "scripts": {
+    "deploy": "npx --yes wrangler@4.152.0 deploy"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "0.3.7"
+  }
+}
