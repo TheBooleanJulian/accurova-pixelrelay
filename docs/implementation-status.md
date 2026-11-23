@@ -40,20 +40,20 @@ _Last updated: 2026-11-23_
 
 ## Known limitations
 
-- **Not deployed.** Needs a host with a persistent disk and a long-running Python process (see handover.md).
+- **Not deployed yet.** Deployment to a Cloudflare Container is built and checked in CI (image build, boot, `wrangler deploy --dry-run`), but has never run on Cloudflare. The setup steps are in [progress.md](../progress.md).
 - **Supabase Auth** has not been run against a real project yet. Dev sign-in is clearly labelled and refused in production.
-- **Storage:** local disk only. The Google Drive adapter is a planned milestone; the interface is in place.
+- **Storage:** local disk and Cloudflare R2. R2 has been tested against a fake S3 server and AWS's signing example, not yet against R2 itself (`/healthz` checks it after deploy). The Google Drive adapter is a planned milestone.
 - No project or photo **deletion** (by design, records are immutable). Owners can archive projects and mark photos "not for editing". A retention and deletion process is an open question for client data.
 - Smart Merge limits: see [image-processing.md](image-processing.md#limitations) (no warping, no HEIC, upscaled edits stay soft).
 - Alternative edits (several contributors on one photo) exist in the data model but not in the UI. One active assignment per photo is enforced.
-- Rate limiting and the queue are single-node (SQLite).
+- One container instance by design. The queue (`SKIP LOCKED`) and the rate limits would hold across several, but nothing else has been tested with more than one.
 - Accessibility: keyboard reachable, visible focus, token contrast, text labels on all status. No formal audit or screen-reader pass yet.
 - No notifications (email or Telegram) when work is assigned or reviewed. Owners share the link themselves.
 
 ## Next steps
 
-1. Decide hosting and deploy a pilot instance (handover.md).
-2. Configure Supabase Auth and test the magic link end to end.
+1. Deploy to Cloudflare following [progress.md](../progress.md): schema, R2 bucket, secrets, Supabase redirect URL.
+2. Test the magic-link sign-in end to end on the live host.
 3. Pilot with a real group shoot, on real phones; collect Smart Merge cases that need tuning.
 4. Google Drive storage adapter (project-owned folder), if the pilot shows a need.
 5. Notifications through the bot fleet (optional, after the pilot).
