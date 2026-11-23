@@ -1,0 +1,8 @@
+.venv
+.git
+data
+scratch
+tests/e2e/out
+docs/screenshots
+**/__pycache__
+.env

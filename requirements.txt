@@ -1,0 +1,6 @@
+# Runtime. Each one is here for a reason the stdlib can't cover:
+fastapi==0.165.0          # HTTP API + validation (fleet default web framework; pydantic comes with it)
+uvicorn==0.54.0           # ASGI server
+python-multipart==0.0.34  # multipart uploads (photos, edits, masks)
+numpy==2.5.5              # Smart Merge: alignment, difference detection, morphology
+pillow==13.0.0            # image decoding, EXIF orientation, ICC colour, resizing, compositing
