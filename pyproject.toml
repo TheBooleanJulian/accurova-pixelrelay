@@ -1,0 +1,19 @@
+[project]
+name = "accurova-pixelrelay"
+version = "0.1.0"
+description = "PixelRelay by Accurova: collaborative photo-editing coordination and revision management."
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"
+filterwarnings = ["ignore::DeprecationWarning:fastapi.testclient", "ignore:Using `httpx`"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+extend-exclude = ["scratch"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501", "B008"]
