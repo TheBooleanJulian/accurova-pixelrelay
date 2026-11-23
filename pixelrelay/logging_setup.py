@@ -19,6 +19,8 @@ _PATTERNS = [
     ),
     (re.compile(r"pr_(owner|room_[a-z0-9]+)=[^;\s]+"), r"pr_\1=[redacted]"),
     (re.compile(r"eyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,}"), "[redacted-jwt]"),
+    (re.compile(r"(postgres(?:ql)?://[^:/@\s]+):[^@\s]+@"), r"\1:[redacted]@"),
+    (re.compile(r"(?i)(Credential=)[A-Za-z0-9]+"), r"\1[redacted]"),
 ]
 
 
